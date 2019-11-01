@@ -1,0 +1,5 @@
+.idea
+node_modules/
+dist/
+smart-home-key.json
+*.log
