@@ -36,7 +36,7 @@ ngrok http 3000
 You will see some output, including
 `Forwarding  https://{random-id}.ngrok.io -> http://localhost:3000`
 
-(Hint: You can use the "Web Interface" link to study the payloads Google is sending to your service)
+(Hint: One of the links in ngrok output, "Web Interface" lets you study the payloads Google is sending to your service)
 
 1. Navigate back to the [Actions on Google Console](https://console.actions.google.com/).
 1. From the top menu under Develop, click on Actions (left nav). Click on Add your first action and choose your app's language(s).

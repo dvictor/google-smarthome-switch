@@ -27,249 +27,241 @@ import * as morgan from 'morgan'
 import {AddressInfo} from 'net'
 // import * as http from 'http'
 // Smart home imports
-import {
-  smarthome,
-  SmartHomeV1ExecuteResponseCommands,
-  SmartHomeV1SyncDevices,
-} from 'actions-on-google'
+import {smarthome, SmartHomeV1ExecuteResponseCommands,} from 'actions-on-google'
 // Local imports
 import * as Auth from './auth-provider'
-import * as Config from './config-provider'
+import {myDevices} from "./devices";
 
-const expressApp = express()
-expressApp.use(cors())
-expressApp.use(morgan('dev'))
-expressApp.use(bodyParser.json())
-expressApp.use(bodyParser.urlencoded({extended: true}))
-expressApp.set('trust proxy', 1)
+const pathPrefix = '/smarthome';
+const expressPort = 3000;
 
-Auth.registerAuthEndpoints(expressApp)
+const expressApp = express();
+expressApp.use(cors());
+expressApp.use(morgan('dev'));
+expressApp.use(bodyParser.json());
+expressApp.use(bodyParser.urlencoded({extended: true}));
+expressApp.set('trust proxy', 1);
 
-let jwt
+Auth.registerAuthEndpoints(pathPrefix, expressApp);
+
+let jwt;
 try {
-  jwt = require('./smart-home-key.json')
+    jwt = require('./smart-home-key.json')
 } catch (e) {
-  console.warn('Service account key is not found')
-  console.warn('Report state and Request sync will be unavailable')
+    console.warn('Service account key is not found');
+    console.warn('Report state and Request sync will be unavailable')
 }
 
 const app = smarthome({
-  jwt,
-  debug: true,
-})
+    jwt,
+    debug: true,
+});
 
-let swOn = false
-function swState(state: boolean) {
-  swOn = state
-  // http.get('http://localhost:3001/' + (swOn ? 'on' : 'off'))
-}
+// function swState(state: boolean) {
+//     swOn = state
+//     http.get('http://localhost:3001/' + (swOn ? 'on' : 'off'))
+// }
 
 // Array could be of any type
 // tslint:disable-next-line
 async function asyncForEach(array: any[], callback: Function) {
-  for (let index = 0; index < array.length; index++) {
-    await callback(array[index], index, array)
-  }
+    for (let index = 0; index < array.length; index++) {
+        await callback(array[index], index, array)
+    }
 }
 
 
 app.onSync(async (body, headers) => {
-  const device:SmartHomeV1SyncDevices = {
-    id: 'jgk',
-    type: 'action.devices.types.SWITCH',
-    traits: ['action.devices.traits.OnOff'],
-    name: {
-      defaultNames: ['Smart Switch'],
-      name: 'Smart Switch',
-      nicknames: ['smart switch'],
-    },
-    deviceInfo: {
-      manufacturer: 'L',
-      model: 'L',
-      hwVersion: '1.0.0',
-      swVersion: '2.0.0',
-    },
-    willReportState: true,
-    // attributes: [],
-    // otherDeviceIds: [],
-    customData: undefined,
-  }
-
-  return {
-    requestId: body.requestId,
-    payload: {
-      agentUserId: '1234',
-      devices: [device],
-    },
-  }
-})
+    return {
+        requestId: body.requestId,
+        payload: {
+            agentUserId: '1234',
+            devices: [...myDevices.values()].map(d => d.sync()),
+        },
+    }
+});
 
 interface DeviceStatesMap {
-  // tslint:disable-next-line
-  [key: string]: any
+    // tslint:disable-next-line
+    [key: string]: any
 }
+
 app.onQuery(async (body, headers) => {
-  const deviceStates: DeviceStatesMap = {}
-  const {devices} = body.inputs[0].payload
-  await asyncForEach(devices, async (device: {id: string}) => {
-    deviceStates[device.id] = {on: swOn}
-  })
-  return {
-    requestId: body.requestId,
-    payload: {
-      devices: deviceStates,
-    },
-  }
-})
+    const states: DeviceStatesMap = {};
+    const {devices} = body.inputs[0].payload;
+    // await asyncForEach(devices, async (device: {id: string}) => {
+    devices.forEach((device: { id: string }) => {
+        let d = myDevices.get(device.id);
+        if (d) {
+            states[device.id] = d.state()
+        } else {
+          console.error(`Unknown device with id: ${device.id}`)
+        }
+    });
+    return {
+        requestId: body.requestId,
+        payload: {
+            devices: states,
+        },
+    }
+});
 
 app.onExecute(async (body, headers) => {
-  const commands: SmartHomeV1ExecuteResponseCommands[] = []
-  const successCommand: SmartHomeV1ExecuteResponseCommands = {
-    ids: [],
-    status: 'SUCCESS',
-    states: {},
-  }
+    const commands: SmartHomeV1ExecuteResponseCommands[] = [];
+    const successCommand: SmartHomeV1ExecuteResponseCommands = {
+        ids: [],
+        status: 'SUCCESS',
+        states: {},
+    };
 
-  const {devices, execution} = body.inputs[0].payload.commands[0]
-  await asyncForEach(devices, async (device: {id: string}) => {
-    try {
-      if (execution[0].command === 'action.devices.commands.OnOff') {
-        swState(execution[0].params.on)
-      }
-      const states = {on: swOn}
-      successCommand.ids.push(device.id)
-      successCommand.states = states
+    const {devices, execution} = body.inputs[0].payload.commands[0];
+    await asyncForEach(devices, async (device: { id: string }) => {
+        try {
+            let d = myDevices.get(device.id);
+            if (!d) {
+              console.error(`Unknown device id: ${device.id}`);
+              return
+            }
+            d.execute(execution[0].command, execution[0].params);
 
-      // Report state back to Homegraph
-      await app.reportState({
-        agentUserId: '1234',
-        requestId: Math.random().toString(),
-        payload: {
-          devices: {
-            states: {
-              [device.id]: states,
-            },
-          },
-        },
-      })
-      console.log('device state reported:', states)
-    } catch (e) {
-      if (e.message === 'pinNeeded') {
-        commands.push({
-          ids: [device.id],
-          status: 'ERROR',
-          errorCode: 'challengeNeeded',
-          challengeNeeded: {
-            type: 'pinNeeded',
-          },
-        })
-        return
-      } else if (e.message === 'challengeFailedPinNeeded') {
-        commands.push({
-          ids: [device.id],
-          status: 'ERROR',
-          errorCode: 'challengeNeeded',
-          challengeNeeded: {
-            type: 'challengeFailedPinNeeded',
-          },
-        })
-        return
-      } else if (e.message === 'ackNeeded') {
-        commands.push({
-          ids: [device.id],
-          status: 'ERROR',
-          errorCode: 'challengeNeeded',
-          challengeNeeded: {
-            type: 'ackNeeded',
-          },
-        })
-        return
-      }
-      commands.push({
-        ids: [device.id],
-        status: 'ERROR',
-        errorCode: e.message,
-      })
+            const state = d.state();
+            successCommand.ids.push(device.id);
+            successCommand.states = state;
+
+            // Report state back to Homegraph
+            await app.reportState({
+                agentUserId: '1234',
+                requestId: Math.random().toString(),
+                payload: {
+                    devices: {
+                        states: {
+                            [device.id]: state,
+                        },
+                    },
+                },
+            });
+            console.log('device state reported:', state)
+        } catch (e) {
+            if (e.message === 'pinNeeded') {
+                commands.push({
+                    ids: [device.id],
+                    status: 'ERROR',
+                    errorCode: 'challengeNeeded',
+                    challengeNeeded: {
+                        type: 'pinNeeded',
+                    },
+                });
+                return
+            } else if (e.message === 'challengeFailedPinNeeded') {
+                commands.push({
+                    ids: [device.id],
+                    status: 'ERROR',
+                    errorCode: 'challengeNeeded',
+                    challengeNeeded: {
+                        type: 'challengeFailedPinNeeded',
+                    },
+                });
+                return
+            } else if (e.message === 'ackNeeded') {
+                commands.push({
+                    ids: [device.id],
+                    status: 'ERROR',
+                    errorCode: 'challengeNeeded',
+                    challengeNeeded: {
+                        type: 'ackNeeded',
+                    },
+                });
+                return
+            }
+            commands.push({
+                ids: [device.id],
+                status: 'ERROR',
+                errorCode: e.message,
+            })
+        }
+    });
+
+    if (successCommand.ids.length) {
+        commands.push(successCommand)
     }
-  })
 
-  if (successCommand.ids.length) {
-    commands.push(successCommand)
-  }
-
-  return {
-    requestId: body.requestId,
-    payload: {
-      commands,
-    },
-  }
-})
+    return {
+        requestId: body.requestId,
+        payload: {
+            commands,
+        },
+    }
+});
 
 app.onDisconnect(async (body, headers) => {
-})
+});
 
-expressApp.post('/smarthome', app)
+expressApp.post(pathPrefix, app);
 
 
-expressApp.post('/smarthome/update', async (req, res) => {
-  console.log('SSS update')
-  console.log(req.body)
-  const {userId, deviceId, name, nickname, states, localDeviceId, errorCode, tfa} = req.body
-  try {
-    console.log('Update:', userId, deviceId, name, nickname, states, localDeviceId, errorCode, tfa)
-    if (localDeviceId || localDeviceId === null) {
-      await app.requestSync(userId)
+expressApp.post(`${pathPrefix}/update`, async (req, res) => {
+    console.log('SSS update');
+    console.log(req.body);
+    const {userId, deviceId, name, nickname, states, localDeviceId, errorCode, tfa} = req.body
+    try {
+        console.log('Update:', userId, deviceId, name, nickname, states, localDeviceId, errorCode, tfa)
+        if (localDeviceId || localDeviceId === null) {
+            await app.requestSync(userId)
+        }
+        if (states !== undefined) {
+            await app.reportState({
+                agentUserId: userId,
+                requestId: Math.random().toString(),
+                payload: {
+                    devices: {
+                        states: {
+                            [deviceId]: states,
+                        },
+                    },
+                },
+            });
+            console.log('device state reported:', states)
+        }
+        res.status(200).send('OK')
+    } catch (e) {
+        console.error(e);
+        res.status(400).send(`Error updating device: ${e}`)
     }
-    if (states !== undefined) {
-      await app.reportState({
-        agentUserId: userId,
-        requestId: Math.random().toString(),
-        payload: {
-          devices: {
-            states: {
-              [deviceId]: states,
-            },
-          },
-        },
-      })
-      console.log('device state reported:', states)
+});
+
+expressApp.post(`${pathPrefix}/create`, async (req, res) => {
+    const {userId, data} = req.body;
+    console.log('Create:', data);
+    try {
+        await app.requestSync(userId)
+    } catch (e) {
+        console.error(e)
+    } finally {
+        res.status(200).send('OK')
     }
-    res.status(200).send('OK')
-  } catch(e) {
-    console.error(e)
-    res.status(400).send(`Error updating device: ${e}`)
-  }
-})
+});
 
-expressApp.post('/smarthome/create', async (req, res) => {
-  const {userId, data} = req.body
-  console.log('Create:', data)
-  try {
-    await app.requestSync(userId)
-  } catch(e) {
-    console.error(e)
-  } finally {
-    res.status(200).send('OK')
-  }
-})
+expressApp.post(`${pathPrefix}/delete`, async (req, res) => {
+    const {userId, deviceId} = req.body;
+    try {
+        console.log('Delete:', deviceId);
+        await app.requestSync(userId)
+    } catch (e) {
+        console.error(e)
+    } finally {
+        res.status(200).send('OK')
+    }
+});
 
-expressApp.post('/smarthome/delete', async (req, res) => {
-  const {userId, deviceId} = req.body
-  try {
-    console.log('Delete:', deviceId)
-    await app.requestSync(userId)
-  } catch(e) {
-    console.error(e)
-  } finally {
-    res.status(200).send('OK')
-  }
-})
+// expressApp.get(`${pathPrefix}/test`, async (req, res) => {
+//   res.status(200).send('OK')
+// })
 
-const appPort = process.env.PORT || Config.expressPort
+const appPort = process.env.PORT || expressPort;
 
 const expressServer = expressApp.listen(appPort, async () => {
-  const server = expressServer.address() as AddressInfo
-  const {address, port} = server
+    const server = expressServer.address() as AddressInfo;
+    const {address, port} = server;
 
-  console.log(`Smart home server listening at ${address}:${port}`)
-})
+    console.log(`Smart home server listening at ${address}:${port}`)
+});

@@ -22,42 +22,62 @@
 import * as express from 'express'
 import * as util from 'util'
 
+//load config
+// let {googleClientId, googleClientSecret, googleCloudProjectId} = require('google-client.json')
+
 /**
  * A function that adds /login, /fakeauth, /faketoken endpoints to an
  * Express server. Replace this with your own OAuth endpoints.
  *
  * @param expressApp Express app
  */
-export async function registerAuthEndpoints(expressApp: express.Express) {
-    expressApp.use('/login', express.static('./frontend/login.html'))
+export async function registerAuthEndpoints(prefix:string, expressApp: express.Express) {
 
-    expressApp.post('/login', async (req, res) => {
-        const {username, password} = req.body
-        console.log('/login ', username, password)
-        // Here, you should validate the user account.
-        // In this sample, we do not do that.
-        return res.redirect(util.format(
-            '%s?client_id=%s&redirect_uri=%s&state=%s&response_type=code',
-            '/frontend', req.body.client_id,
-            encodeURIComponent(req.body.redirect_uri), req.body.state))
-    })
+    // expressApp.post('/login', async (req, res) => {
+    //     const {username, password} = req.body
+    //     console.log('/login ', username, password)
+    //     // Here, you should validate the user account.
+    //     // In this sample, we do not do that.
+    //     return res.redirect(util.format(
+    //         '%s?client_id=%s&redirect_uri=%s&state=%s&response_type=code',
+    //         '/frontend', req.body.client_id,
+    //         encodeURIComponent(req.body.redirect_uri), req.body.state))
+    // })
 
-    expressApp.get('/fakeauth', async (req, res) => {
+    expressApp.get(`${prefix}/fakeauth`, async (req, res) => {
+
+        let body = `
+        <!doctype html>
+        <html><head>
+        <meta name="viewport" content="width=device-width, initial-scale=1">
+        </head>
+        <form method=post>
+            <input type="text" placeholder="username"><br><br>
+            <input type="password" placeholder="password"><br><br>
+            <input type="submit" value="Login">
+        </form>
+        </html>
+        `;
+        res.status(200).send(body)
+    });
+
+    expressApp.post(`${prefix}/fakeauth`, async (req, res) => {
+
         const responseurl = util.format('%s?code=%s&state=%s',
             decodeURIComponent(req.query.redirect_uri), 'xxxxxx',
-            req.query.state)
-        console.log(responseurl)
+            req.query.state);
+        console.log(responseurl);
         return res.redirect(responseurl)
-    })
+    });
 
-    expressApp.all('/faketoken', async (req, res) => {
+    expressApp.all(`${prefix}/faketoken`, async (req, res) => {
         const grantType = req.query.grant_type
-            ? req.query.grant_type : req.body.grant_type
-        const secondsInDay = 86400 // 60 * 60 * 24
-        const HTTP_STATUS_OK = 200
-        console.log(`Grant type ${grantType}`)
+            ? req.query.grant_type : req.body.grant_type;
+        const secondsInDay = 86400; // 60 * 60 * 24
+        const HTTP_STATUS_OK = 200;
+        console.log(`Grant type ${grantType}`);
 
-        let obj
+        let obj;
         if (grantType === 'authorization_code') {
             obj = {
                 token_type: 'bearer',
